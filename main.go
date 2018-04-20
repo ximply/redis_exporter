@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
+	"net"
 )
 
 var (
@@ -20,7 +21,7 @@ var (
 	namespace        = flag.String("namespace", "redis", "Namespace for metrics")
 	checkKeys        = flag.String("check-keys", "", "Comma separated list of keys to export value and length/size")
 	separator        = flag.String("separator", ",", "separator used to split redis.addr, redis.password and redis.alias into several elements.")
-	listenAddress    = flag.String("web.listen-address", ":9121", "Address to listen on for web interface and telemetry.")
+	listenAddress    = flag.String("unix-sock", "/dev/shm/redis_exporter.sock", "Address to listen on for unix sock access and telemetry.")
 	metricPath       = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
 	isDebug          = flag.Bool("debug", false, "Output verbose debug information")
 	logFormat        = flag.String("log-format", "txt", "Log format, valid options are txt and json")
@@ -98,16 +99,17 @@ func main() {
 	}, []string{"version", "commit_sha", "build_date", "golang_version"})
 	buildInfo.WithLabelValues(VERSION, COMMIT_SHA1, BUILD_DATE, runtime.Version()).Set(1)
 
+	mux := http.NewServeMux()
 	if *redisMetricsOnly {
 		registry := prometheus.NewRegistry()
 		registry.Register(exp)
 		registry.Register(buildInfo)
 		handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{})
-		http.Handle(*metricPath, handler)
+		mux.Handle(*metricPath, handler)
 	} else {
 		prometheus.MustRegister(exp)
 		prometheus.MustRegister(buildInfo)
-		http.Handle(*metricPath, promhttp.Handler())
+		mux.Handle(*metricPath, promhttp.Handler())
 	}
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -125,5 +127,15 @@ func main() {
 	log.Printf("Providing metrics at %s%s", *listenAddress, *metricPath)
 	log.Printf("Connecting to redis hosts: %#v", addrs)
 	log.Printf("Using alias: %#v", aliases)
-	log.Fatal(http.ListenAndServe(*listenAddress, nil))
+
+	server := http.Server{
+		Handler: mux, // http.DefaultServeMux,
+	}
+	os.Remove(*listenAddress)
+
+	listener, err := net.Listen("unix", *listenAddress)
+	if err != nil {
+		panic(err)
+	}
+	server.Serve(listener)
 }
